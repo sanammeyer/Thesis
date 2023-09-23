@@ -76,6 +76,20 @@ def plot_usage(df):
     plt.xticks(rotation=45)
     plt.show()
 
+def plot_usage_multiple(df):
+    num_appliances = df.shape[1] 
+    plt.figure(figsize=(50,10))
+    fig, axs = plt.subplots(num_appliances, 1, figsize=(15, 3 * num_appliances), sharex=True)
+
+    for i in range(num_appliances):
+        ax = axs[i] if num_appliances > 1 else axs  # Handle single plot case
+        ax.plot(df.index, df.iloc[:, i])  # Skip the timestamp column
+        ax.set_ylabel(df.columns[i])  # Set the appliance name as the y-axis label
+    plt.xlabel('Timestamp')
+    plt.xticks(rotation=45)
+    plt.subplots_adjust(hspace=0.5)  # Adjust vertical spacing between subplots
+    plt.show()
+
 
 def activation_times(power_consumption_data):
 
@@ -110,27 +124,46 @@ def activation_times(power_consumption_data):
         #if significant_change:
             #times_applicance_was_switched_on.append(power_consumption_data.index[i])
 
-def split_train_test(df):
+def split_train_test(df,start_date, end_date):
     # Determine the date threshold for splitting
-    last_week_start = df.index.max() - pd.DateOffset(weeks=1)
+    #last_week_start = df.index.max() - pd.DateOffset(weeks=1)
     
     # Split the dataframe into training and test dataframes
-    train_df = df[df.index < last_week_start]
-    test_df = df[df.index >= last_week_start]
+    #train_df = df[df.index < last_week_start]
+    #test_df = df[df.index >= last_week_start]
     
+    train_df = df[ (df.index > start_date) & (df.index < end_date)]
+    test_df = df[df.index >= end_date]
     return train_df, test_df
 
-def probabilities(pivot_table, df_test):
-    ratios = []
-    for date, n in df_test.iterrows():
-        N = pivot_table.loc[n['day']]
-        n1 = n['0am-6am'] / np.where(N['0am-6am'] == 0, 1, N['0am-6am'])
-        n2 = n['6am-12pm'] / np.where(N['6am-12pm'] == 0, 1, N['6am-12pm'])
-        n3 = n['12pm-6pm'] / np.where(N['12pm-6pm'] == 0, 1, N['12pm-6pm'])
-        n4 = n['6pm-12am'] / np.where(N['6pm-12am'] == 0, 1, N['6pm-12am'])
-        df = pd.DataFrame({'0am-6am':n1, '6am-12pm':n2, '12pm-6pm':n3, '6pm-12am':n4}, index=[date])
-        ratios.append(df)
-    return pd.concat(ratios)
+# def probabilities(pivot_table, df_test):
+#     ratios = []
+#     for date, n in df_test.iterrows():
+#         N = pivot_table.loc[n['day']]
+#         # Check if the denominator is zero, if so, set n1 to n['0am-6am']
+#         if N['0am-6am'] == 0:
+#             n1 = 0
+#         else:
+#             n1 = n['0am-6am'] / N['0am-6am']
+        
+#         # Similar modifications for n2, n3, and n4
+#         if N['6am-12pm'] == 0:
+#             n2 = 0
+#         else:
+#             n2 = n['6am-12pm'] / N['6am-12pm']
+        
+#         if N['12pm-6pm'] == 0:
+#             n3 = 0
+#         else:
+#             n3 = n['12pm-6pm'] / N['12pm-6pm']
+        
+#         if N['6pm-12am'] == 0:
+#             n4 = 0
+#         else:
+#             n4 = n['6pm-12am'] / N['6pm-12am']
+#         df = pd.DataFrame({'0am-6am':n1, '6am-12pm':n2, '12pm-6pm':n3, '6pm-12am':n4}, index=[date])
+#         ratios.append(df)
+#     return pd.concat(ratios)
 
 def create_pivot_table(df):
     pivot_table = df.pivot_table(values=['0am-6am', '6am-12pm', '12pm-6pm', '6pm-12am'], index='day', aggfunc='sum', fill_value=0)
@@ -138,27 +171,53 @@ def create_pivot_table(df):
 
 def calculate_belief_masses(df_test, bba):
     time_intervals = ['0am-6am', '6am-12pm', '12pm-6pm', '6pm-12am']
-    masses = []
+    rows = []
 
     def calculate_masses_for_interval(p, ti_value):
         C0 = 0.9
         C1 = 0.1
         if ti_value > 0:
-            m_h1 = round(p * C0, 2)
-            m_h2 = round(1 - p * C0, 2)
+            m_h1 = p * C0
+            m_h2 = (1 - p) * C0
         else:
-            m_h1 = round((1 - p) * C1, 2)
-            m_h2 = round(p * C1, 2)
-        m_h3 = round(1 - (m_h1 - m_h2), 2)
-        return m_h1, m_h2, m_h3
+            m_h1 = (1 - p) * C1
+            m_h2 = p * C1
+        
+        m_h3 = 1 - (m_h1 - m_h2)
+        k = m_h1 + m_h2 + m_h3
+        if k > 1:
+            m_h1 = m_h1 / k
+            m_h2 = m_h2 / k
+            m_h3 = m_h3 / k
+        return np.array([m_h1, m_h2, m_h3])
 
     for date, ti in df_test.iterrows():
-        p = bba.loc[date]
+        p = bba.loc[date.day_name()]
+        intervals_data = {}
         for interval in time_intervals:
             ti_value = ti[interval]
             p_interval = p[interval]
-            m_h1, m_h2, m_h3 = calculate_masses_for_interval(p_interval, ti_value)
-            df = pd.DataFrame({'m_h1': [m_h1], 'm_h2': [m_h2], 'm_h3': [m_h3], 'date': date}, index=[interval])
-            masses.append(df)
+            result = calculate_masses_for_interval(p_interval, ti_value)
+            intervals_data[interval] = result
+
+        rows.append((date, intervals_data))
+
+    columns = ['date', 'intervals']
+    df = pd.DataFrame(rows, columns=columns)
     
-    return pd.concat(masses)
+    # Set the 'date' column as the index
+    df.set_index('date', inplace=True)
+    return df
+
+def probabilities(pivot_table):
+    # Divide each value by the sum of its respective column for each day
+    new_df = pivot_table.copy()
+    new_df['0am-6am'] /= pivot_table.sum(axis=1)
+    new_df['6am-12pm'] /= pivot_table.sum(axis=1)
+    new_df['12pm-6pm'] /= pivot_table.sum(axis=1)
+    new_df['6pm-12am'] /= pivot_table.sum(axis=1)
+
+    # Reset the index to have 'day' as a column instead of an index
+    new_df.reset_index(inplace=True)
+    new_df.set_index('day', inplace=True)
+    return new_df
